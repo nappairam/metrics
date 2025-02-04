@@ -1,4 +1,6 @@
-use metrics::Key;
+use std::{slice::Iter, sync::Arc};
+
+use metrics::{Key, Label};
 
 pub struct WriteResult {
     payloads_written: u64,
@@ -45,11 +47,12 @@ pub(super) struct PayloadWriter {
     trailer_buf: Vec<u8>,
     offsets: Vec<usize>,
     with_length_prefix: bool,
+    global_labels: Arc<Vec<Label>>,
 }
 
 impl PayloadWriter {
     /// Creates a new `PayloadWriter` with the given maximum payload length.
-    pub fn new(max_payload_len: usize, with_length_prefix: bool) -> Self {
+    pub fn new(max_payload_len: usize, with_length_prefix: bool, global_labels: Arc<Vec<Label>>) -> Self {
         // NOTE: This should also be handled in the builder, but we want to just double check here that we're getting a
         // properly sanitized value.
         assert!(
@@ -63,6 +66,7 @@ impl PayloadWriter {
             trailer_buf: Vec::new(),
             offsets: Vec::new(),
             with_length_prefix,
+            global_labels,
         };
 
         writer.prepare_for_write();
@@ -122,7 +126,7 @@ impl PayloadWriter {
     }
 
     fn write_trailing(&mut self, key: &Key, timestamp: Option<u64>) {
-        write_metric_trailer(key, timestamp, &mut self.buf, None);
+        write_metric_trailer(key, timestamp, &mut self.buf, None, self.global_labels.iter());
     }
 
     /// Writes a counter payload.
@@ -210,7 +214,7 @@ impl PayloadWriter {
         //
         // We do this for efficiency reasons, but also to calculate the minimum payload length.
         self.trailer_buf.clear();
-        write_metric_trailer(key, None, &mut self.trailer_buf, maybe_sample_rate);
+        write_metric_trailer(key, None, &mut self.trailer_buf, maybe_sample_rate, self.global_labels.iter());
 
         // Calculate the minimum payload length, which is the key name, the metric trailer, and the metric type
         // substring (`|<metric type>`). This is the minimum amount of space we need to write out the metric without
@@ -333,6 +337,7 @@ fn write_metric_trailer(
     maybe_timestamp: Option<u64>,
     buf: &mut Vec<u8>,
     maybe_sample_rate: Option<f64>,
+    global_labels: Iter<Label>
 ) {
     // Write the sample rate if it's not 1.0, as that is the implied default.
     if let Some(sample_rate) = maybe_sample_rate {
@@ -346,7 +351,7 @@ fn write_metric_trailer(
     // Write the metric tags first.
     let tags = key.labels();
     let mut wrote_tag = false;
-    for tag in tags {
+    for tag in global_labels.chain(tags) {
         // If we haven't written a tag yet, write out the tags prefix first.
         //
         // Otherwise, write a tag separator.
@@ -466,7 +471,7 @@ mod tests {
         ];
 
         for (key, value, ts, expected) in cases {
-            let mut writer = PayloadWriter::new(8192, false);
+            let mut writer = PayloadWriter::new(8192, false, Default::default());
             let result = writer.write_counter(&key, value, ts);
             assert_eq!(result.payloads_written(), 1);
 
@@ -496,7 +501,7 @@ mod tests {
         ];
 
         for (key, value, ts, expected) in cases {
-            let mut writer = PayloadWriter::new(8192, false);
+            let mut writer = PayloadWriter::new(8192, false, Default::default());
             let result = writer.write_gauge(&key, value, ts);
             assert_eq!(result.payloads_written(), 1);
 
@@ -528,7 +533,7 @@ mod tests {
         ];
 
         for (key, values, expected) in cases {
-            let mut writer = PayloadWriter::new(8192, false);
+            let mut writer = PayloadWriter::new(8192, false, Default::default());
             let result = writer.write_histogram(&key, values.iter().copied(), None);
             assert_eq!(result.payloads_written(), 1);
 
@@ -560,7 +565,7 @@ mod tests {
         ];
 
         for (key, values, expected) in cases {
-            let mut writer = PayloadWriter::new(8192, false);
+            let mut writer = PayloadWriter::new(8192, false, Default::default());
             let result = writer.write_distribution(&key, values.iter().copied(), None);
             assert_eq!(result.payloads_written(), 1);
 
@@ -599,7 +604,7 @@ mod tests {
         ];
 
         for (key, values, expected) in cases {
-            let mut writer = PayloadWriter::new(8192, true);
+            let mut writer = PayloadWriter::new(8192, true, Default::default());
             let result = writer.write_distribution(&key, values.iter().copied(), None);
             assert_eq!(result.payloads_written(), 1);
 
@@ -613,7 +618,7 @@ mod tests {
         fn property_test_gauntlet(payload_limit in 0..16384usize, inputs in arb_vec(arb_metric(), 1..128)) {
             // TODO: Parameterize reservoir size so we can exercise the sample rate stuff.[]
 
-            let mut writer = PayloadWriter::new(payload_limit, false);
+            let mut writer = PayloadWriter::new(payload_limit, false, Default::default());
             let mut total_input_points: u64 = 0;
             let mut payloads_written = 0;
             let mut points_dropped = 0;

@@ -1,5 +1,6 @@
 use std::{fmt, net::SocketAddr, sync::Arc, time::Duration};
 
+use metrics::Label;
 use thiserror::Error;
 use tracing::debug;
 
@@ -97,6 +98,7 @@ pub struct DogStatsDBuilder {
     histogram_sampling: bool,
     histogram_reservoir_size: usize,
     histograms_as_distributions: bool,
+    global_labels: Vec<Label>,
 }
 
 impl DogStatsDBuilder {
@@ -229,6 +231,15 @@ impl DogStatsDBuilder {
         self
     }
 
+    /// Set Global labels for all metrics to this exporter
+    ///
+    /// Global labels are applied to all metrics.
+    #[must_use]
+    pub fn with_global_labels(mut self, labels: Vec<Label>) -> Self {
+        self.global_labels = labels;
+        self
+    }
+
     /// Sets whether or not to enable telemetry for the exporter.
     ///
     /// When enabled, additional metrics will be sent to the configured remote server that provide insight into the
@@ -339,6 +350,7 @@ impl DogStatsDBuilder {
             max_payload_len,
             flush_interval,
             write_timeout: self.write_timeout,
+            global_labels: Arc::new(self.global_labels),
         };
 
         if self.synchronous {
@@ -387,6 +399,7 @@ impl Default for DogStatsDBuilder {
             histogram_sampling: false,
             histogram_reservoir_size: DEFAULT_HISTOGRAM_RESERVOIR_SIZE,
             histograms_as_distributions: true,
+            global_labels: Default::default()
         }
     }
 }

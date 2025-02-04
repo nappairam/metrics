@@ -1,10 +1,10 @@
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
 use std::{
-    fmt,
-    net::{SocketAddr, ToSocketAddrs as _},
-    time::Duration,
+    fmt, net::{SocketAddr, ToSocketAddrs as _}, sync::Arc, time::Duration
 };
+
+use metrics::Label;
 
 pub mod sync;
 
@@ -108,6 +108,7 @@ pub(crate) struct ForwarderConfiguration {
     pub max_payload_len: usize,
     pub flush_interval: Duration,
     pub write_timeout: Duration,
+    pub global_labels: Arc<Vec<Label>>,
 }
 
 impl ForwarderConfiguration {

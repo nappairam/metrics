@@ -47,12 +47,11 @@ pub(super) struct PayloadWriter {
     trailer_buf: Vec<u8>,
     offsets: Vec<usize>,
     with_length_prefix: bool,
-    global_labels: Arc<Vec<Label>>,
 }
 
 impl PayloadWriter {
     /// Creates a new `PayloadWriter` with the given maximum payload length.
-    pub fn new(max_payload_len: usize, with_length_prefix: bool, global_labels: Arc<Vec<Label>>) -> Self {
+    pub fn new(max_payload_len: usize, with_length_prefix: bool) -> Self {
         // NOTE: This should also be handled in the builder, but we want to just double check here that we're getting a
         // properly sanitized value.
         assert!(
@@ -66,7 +65,6 @@ impl PayloadWriter {
             trailer_buf: Vec::new(),
             offsets: Vec::new(),
             with_length_prefix,
-            global_labels,
         };
 
         writer.prepare_for_write();
@@ -125,21 +123,25 @@ impl PayloadWriter {
         true
     }
 
-    fn write_trailing(&mut self, key: &Key, timestamp: Option<u64>) {
-        write_metric_trailer(key, timestamp, &mut self.buf, None, self.global_labels.iter());
+    fn write_trailing(&mut self, key: &Key, timestamp: Option<u64>, labels: Arc<Vec<Label>>) {
+        write_metric_trailer(key, timestamp, &mut self.buf, None, labels.iter());
     }
 
     /// Writes a counter payload.
-    pub fn write_counter(&mut self, key: &Key, value: u64, timestamp: Option<u64>) -> WriteResult {
+    pub fn write_counter(&mut self, key: &Key, value: u64, timestamp: Option<u64>, prefix: &Option<String>, labels: Arc<Vec<Label>>) -> WriteResult {
         let mut int_writer = itoa::Buffer::new();
         let value_str = int_writer.format(value);
 
+        if let Some(prefix) = prefix {
+            self.buf.extend_from_slice(prefix.as_bytes());
+            self.buf.push(b'.');
+        }
         self.buf.extend_from_slice(key.name().as_bytes());
         self.buf.push(b':');
         self.buf.extend_from_slice(value_str.as_bytes());
         self.buf.extend_from_slice(b"|c");
 
-        self.write_trailing(key, timestamp);
+        self.write_trailing(key, timestamp, labels);
 
         if self.commit() {
             WriteResult::success(1)
@@ -149,16 +151,20 @@ impl PayloadWriter {
     }
 
     /// Writes a gauge payload.
-    pub fn write_gauge(&mut self, key: &Key, value: f64, timestamp: Option<u64>) -> WriteResult {
+    pub fn write_gauge(&mut self, key: &Key, value: f64, timestamp: Option<u64>, prefix: &Option<String>, labels: Arc<Vec<Label>>) -> WriteResult {
         let mut float_writer = ryu::Buffer::new();
         let value_str = float_writer.format(value);
 
+        if let Some(prefix) = prefix {
+            self.buf.extend_from_slice(prefix.as_bytes());
+            self.buf.push(b'.');
+        }
         self.buf.extend_from_slice(key.name().as_bytes());
         self.buf.push(b':');
         self.buf.extend_from_slice(value_str.as_bytes());
         self.buf.extend_from_slice(b"|g");
 
-        self.write_trailing(key, timestamp);
+        self.write_trailing(key, timestamp, labels);
 
         if self.commit() {
             WriteResult::success(1)
@@ -173,12 +179,14 @@ impl PayloadWriter {
         key: &Key,
         values: I,
         maybe_sample_rate: Option<f64>,
+        prefix: &Option<String>,
+        labels: Arc<Vec<Label>>,
     ) -> WriteResult
     where
         I: IntoIterator<Item = f64>,
         I::IntoIter: ExactSizeIterator,
     {
-        self.write_hist_dist_inner(key, values, b'h', maybe_sample_rate)
+        self.write_hist_dist_inner(key, values, b'h', maybe_sample_rate, prefix, labels)
     }
 
     /// Writes a distribution payload.
@@ -187,12 +195,14 @@ impl PayloadWriter {
         key: &Key,
         values: I,
         maybe_sample_rate: Option<f64>,
+        prefix: &Option<String>,
+        labels: Arc<Vec<Label>>,
     ) -> WriteResult
     where
         I: IntoIterator<Item = f64>,
         I::IntoIter: ExactSizeIterator,
     {
-        self.write_hist_dist_inner(key, values, b'd', maybe_sample_rate)
+        self.write_hist_dist_inner(key, values, b'd', maybe_sample_rate, prefix, labels)
     }
 
     fn write_hist_dist_inner<I>(
@@ -201,6 +211,8 @@ impl PayloadWriter {
         values: I,
         metric_type: u8,
         maybe_sample_rate: Option<f64>,
+        prefix: &Option<String>,
+        labels: Arc<Vec<Label>>,
     ) -> WriteResult
     where
         I: IntoIterator<Item = f64>,
@@ -214,7 +226,7 @@ impl PayloadWriter {
         //
         // We do this for efficiency reasons, but also to calculate the minimum payload length.
         self.trailer_buf.clear();
-        write_metric_trailer(key, None, &mut self.trailer_buf, maybe_sample_rate, self.global_labels.iter());
+        write_metric_trailer(key, None, &mut self.trailer_buf, maybe_sample_rate, labels.iter());
 
         // Calculate the minimum payload length, which is the key name, the metric trailer, and the metric type
         // substring (`|<metric type>`). This is the minimum amount of space we need to write out the metric without
@@ -265,6 +277,10 @@ impl PayloadWriter {
 
             // Write the metric name if it hasn't been written yet.
             if needs_name {
+                if let Some(prefix) = prefix {
+                    self.buf.extend_from_slice(prefix.as_bytes());
+                    self.buf.push(b'.');
+                }
                 self.buf.extend_from_slice(key.name().as_bytes());
                 needs_name = false;
             }
@@ -390,6 +406,8 @@ fn write_metric_trailer(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use metrics::{Key, Label};
     use proptest::{
         collection::vec as arb_vec,
@@ -471,8 +489,8 @@ mod tests {
         ];
 
         for (key, value, ts, expected) in cases {
-            let mut writer = PayloadWriter::new(8192, false, Default::default());
-            let result = writer.write_counter(&key, value, ts);
+            let mut writer = PayloadWriter::new(8192, false);
+            let result = writer.write_counter(&key, value, ts, &None, Default::default());
             assert_eq!(result.payloads_written(), 1);
 
             let actual = string_from_writer(&mut writer);
@@ -501,8 +519,8 @@ mod tests {
         ];
 
         for (key, value, ts, expected) in cases {
-            let mut writer = PayloadWriter::new(8192, false, Default::default());
-            let result = writer.write_gauge(&key, value, ts);
+            let mut writer = PayloadWriter::new(8192, false);
+            let result = writer.write_gauge(&key, value, ts, &None, Default::default());
             assert_eq!(result.payloads_written(), 1);
 
             let actual = string_from_writer(&mut writer);
@@ -533,8 +551,8 @@ mod tests {
         ];
 
         for (key, values, expected) in cases {
-            let mut writer = PayloadWriter::new(8192, false, Default::default());
-            let result = writer.write_histogram(&key, values.iter().copied(), None);
+            let mut writer = PayloadWriter::new(8192, false);
+            let result = writer.write_histogram(&key, values.iter().copied(), None, &None, Default::default());
             assert_eq!(result.payloads_written(), 1);
 
             let actual = string_from_writer(&mut writer);
@@ -565,8 +583,8 @@ mod tests {
         ];
 
         for (key, values, expected) in cases {
-            let mut writer = PayloadWriter::new(8192, false, Default::default());
-            let result = writer.write_distribution(&key, values.iter().copied(), None);
+            let mut writer = PayloadWriter::new(8192, false);
+            let result = writer.write_distribution(&key, values.iter().copied(), None, &None, Default::default());
             assert_eq!(result.payloads_written(), 1);
 
             let actual = string_from_writer(&mut writer);
@@ -604,8 +622,8 @@ mod tests {
         ];
 
         for (key, values, expected) in cases {
-            let mut writer = PayloadWriter::new(8192, true, Default::default());
-            let result = writer.write_distribution(&key, values.iter().copied(), None);
+            let mut writer = PayloadWriter::new(8192, true);
+            let result = writer.write_distribution(&key, values.iter().copied(), None, &None, Arc::default());
             assert_eq!(result.payloads_written(), 1);
 
             let actual = buf_from_writer(&mut writer);
@@ -618,7 +636,7 @@ mod tests {
         fn property_test_gauntlet(payload_limit in 0..16384usize, inputs in arb_vec(arb_metric(), 1..128)) {
             // TODO: Parameterize reservoir size so we can exercise the sample rate stuff.[]
 
-            let mut writer = PayloadWriter::new(payload_limit, false, Default::default());
+            let mut writer = PayloadWriter::new(payload_limit, false);
             let mut total_input_points: u64 = 0;
             let mut payloads_written = 0;
             let mut points_dropped = 0;
@@ -628,21 +646,21 @@ mod tests {
                     InputMetric::Counter(key, value, ts) => {
                         total_input_points += 1;
 
-                        let result = writer.write_counter(&key, value, ts);
+                        let result = writer.write_counter(&key, value, ts, &None, Default::default());
                         payloads_written += result.payloads_written();
                         points_dropped += result.points_dropped();
                     },
                     InputMetric::Gauge(key, value, ts) => {
                         total_input_points += 1;
 
-                        let result = writer.write_gauge(&key, value, ts);
+                        let result = writer.write_gauge(&key, value, ts, &None, Default::default());
                         payloads_written += result.payloads_written();
                         points_dropped += result.points_dropped();
                     },
                     InputMetric::Histogram(key, values) => {
                         total_input_points += values.len() as u64;
 
-                        let result = writer.write_histogram(&key, values, None);
+                        let result = writer.write_histogram(&key, values, None, &None, Default::default());
                         payloads_written += result.payloads_written();
                         points_dropped += result.points_dropped();
                     },

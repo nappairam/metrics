@@ -1,6 +1,6 @@
-use std::{collections::HashSet, time::SystemTime};
+use std::{collections::HashSet, sync::Arc, time::SystemTime};
 
-use metrics::Key;
+use metrics::{Key, Label};
 use metrics_util::registry::Registry;
 use tracing::error;
 
@@ -27,6 +27,12 @@ pub struct StateConfiguration {
 
     /// Whether or not to emit histograms as distributions.
     pub histograms_as_distributions: bool,
+
+    /// Global labels to add to all metrics
+    pub global_labels: Arc<Vec<Label>>,
+
+    /// Global prefix/namespace to use for all metrics
+    pub global_prefix: Option<String>,
 }
 
 /// Exporter state.
@@ -96,7 +102,7 @@ impl State {
 
             active_counters += 1;
 
-            let result = writer.write_counter(&key, value, self.get_aggregation_timestamp());
+            let result = writer.write_counter(&key, value, self.get_aggregation_timestamp(), &self.config.global_prefix, self.config.global_labels.clone());
             if result.any_failures() {
                 let points_dropped = result.points_dropped();
                 error!(
@@ -117,7 +123,7 @@ impl State {
 
         for (key, gauge) in gauges {
             let (value, points_flushed) = gauge.flush();
-            let result = writer.write_gauge(&key, value, self.get_aggregation_timestamp());
+            let result = writer.write_gauge(&key, value, self.get_aggregation_timestamp(), &self.config.global_prefix, self.config.global_labels.clone());
             if result.any_failures() {
                 let points_dropped = result.points_dropped();
                 error!(metric_name = key.name(), points_dropped, "Failed to build gauge payload.");
@@ -141,9 +147,9 @@ impl State {
             histogram.flush(|maybe_sample_rate, values| {
                 let points_len = values.len();
                 let result = if self.config.histograms_as_distributions {
-                    writer.write_distribution(&key, values, maybe_sample_rate)
+                    writer.write_distribution(&key, values, maybe_sample_rate, &self.config.global_prefix, self.config.global_labels.clone())
                 } else {
-                    writer.write_histogram(&key, values, maybe_sample_rate)
+                    writer.write_histogram(&key, values, maybe_sample_rate, &self.config.global_prefix, self.config.global_labels.clone())
                 };
 
                 // Scale the points flushed/dropped values by the sample rate to determine the true number of points flushed/dropped.

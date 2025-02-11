@@ -128,7 +128,7 @@ impl PayloadWriter {
     }
 
     /// Writes a counter payload.
-    pub fn write_counter(&mut self, key: &Key, value: u64, timestamp: Option<u64>, prefix: &Option<String>, labels: Arc<Vec<Label>>) -> WriteResult {
+    pub fn write_counter(&mut self, key: &Key, value: u64, timestamp: Option<u64>, prefix: Option<&str>, labels: Arc<Vec<Label>>) -> WriteResult {
         let mut int_writer = itoa::Buffer::new();
         let value_str = int_writer.format(value);
 
@@ -151,7 +151,7 @@ impl PayloadWriter {
     }
 
     /// Writes a gauge payload.
-    pub fn write_gauge(&mut self, key: &Key, value: f64, timestamp: Option<u64>, prefix: &Option<String>, labels: Arc<Vec<Label>>) -> WriteResult {
+    pub fn write_gauge(&mut self, key: &Key, value: f64, timestamp: Option<u64>, prefix: Option<&str>, labels: Arc<Vec<Label>>) -> WriteResult {
         let mut float_writer = ryu::Buffer::new();
         let value_str = float_writer.format(value);
 
@@ -179,7 +179,7 @@ impl PayloadWriter {
         key: &Key,
         values: I,
         maybe_sample_rate: Option<f64>,
-        prefix: &Option<String>,
+        prefix: Option<&str>,
         labels: Arc<Vec<Label>>,
     ) -> WriteResult
     where
@@ -195,7 +195,7 @@ impl PayloadWriter {
         key: &Key,
         values: I,
         maybe_sample_rate: Option<f64>,
-        prefix: &Option<String>,
+        prefix: Option<&str>,
         labels: Arc<Vec<Label>>,
     ) -> WriteResult
     where
@@ -211,7 +211,7 @@ impl PayloadWriter {
         values: I,
         metric_type: u8,
         maybe_sample_rate: Option<f64>,
-        prefix: &Option<String>,
+        prefix: Option<&str>,
         labels: Arc<Vec<Label>>,
     ) -> WriteResult
     where
